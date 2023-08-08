@@ -1,14 +1,10 @@
 use super::marker;
 use super::Value;
-use crate::DecodePart;
 use crate::amf3;
 use crate::error::DecodeError;
 use crate::{DecodeResult, Pair};
 use byteorder::{BigEndian, ReadBytesExt};
-use std::error::Error;
 use std::io;
-use std::io::Cursor;
-use std::io::Read;
 use std::time;
 
 /// AMF0 decoder.
@@ -16,8 +12,6 @@ use std::time;
 pub struct Decoder<R> {
     inner: R,
     complexes: Vec<Value>,
-    reader: u32,
-    innervec: Vec<u8>
 }
 impl<R> Decoder<R> {
     /// Unwraps this `Decoder`, returning the underlying reader.
@@ -40,222 +34,9 @@ impl<R> Decoder<R>
 where
     R: AsRef<[u8]> + io::Read + Copy
 {
-    pub fn new_from_array(inner: R) -> Self {
-        let b = inner;
-        Decoder {
-            inner: b,
-            complexes: Vec::new(),
-            reader: 0,
-            innervec: inner.as_ref().to_vec()
-        }
-    }
-
-    pub fn decode_entire(&mut self) -> DecodeResult<Vec<Value>> {
-    self.decode_entire_array()
-    }
-
-    fn decode_once(&mut self) -> DecodeResult<Value> { // TODO SELF READER INCREASING
-        let marker = Cursor::new(&self.innervec[self.reader as usize..]).read_u8()?;
-        let mut a: Vec<Value> = Vec::new();
-        self.reader += 1;
-        println!("MARKER : {}",marker);
-        println!("REMAINING VEC :  {:?}",&self.innervec[self.reader as usize..]);
-        match marker {
-            marker::NUMBER => {a.push(self.decode_number_from_vec()?); self.reader += 8},
-            marker::BOOLEAN => {a.push(self.decode_boolean_from_vec()?); self.reader += 1 },
-            marker::STRING => {
-                let temp = self.decode_string_from_vec()?;
-                self.reader += temp.1;
-                a.push(temp.0);
-            }
-            marker::OBJECT => {a.push(self.decode_object_from_vec()?);}
-            marker::MOVIECLIP => return Err(DecodeError::Unsupported { marker }),
-            marker::NULL => {a.push(Value::Null);},
-            marker::UNDEFINED => {a.push(Value::Undefined);},
-            marker::REFERENCE => {self.decode_reference_from_vec();}
-            marker::ECMA_ARRAY => {self.decode_ecma_array_from_vec();}
-            marker::OBJECT_END_MARKER => return Err(DecodeError::UnexpectedObjectEnd),
-            marker::STRICT_ARRAY => {self.decode_strict_array_from_vec();}
-            marker::DATE => {self.decode_date_from_vec();}
-            marker::LONG_STRING => {let decoded = self.decode_long_string_from_vec()?; a.push(decoded.0); self.reader += decoded.1;}
-            marker::UNSUPPORTED => return Err(DecodeError::Unsupported { marker }),
-            marker::RECORDSET => return Err(DecodeError::Unsupported { marker }),
-            marker::XML_DOCUMENT => {self.decode_xml_document_from_vec();}
-            marker::TYPED_OBJECT => {self.decode_typed_object_from_vec();}
-            marker::AVMPLUS_OBJECT => {self.decode_avmplus_from_vec();}
-            _ => return Err(DecodeError::Unknown { marker }),
-        }
-        Ok(a.get(0).unwrap().to_owned())
-    }
-    fn decode_entire_array(&mut self) -> DecodeResult<Vec<Value>> {
-        let mut a = Vec::new();
-        while self.reader != self.innervec.len() as u32 {
-            let marker = Cursor::new(&self.innervec[self.reader as usize..]).read_u8()?;
-            self.reader += 1;
-            println!("MARKER ENTIRE : {}",marker);
-            match marker {
-                marker::NUMBER => {a.push(self.decode_number_from_vec()?); self.reader += 8},
-                marker::BOOLEAN => {a.push(self.decode_boolean_from_vec()?); self.reader += 1 },
-                marker::STRING => {
-                    let temp = self.decode_string_from_vec()?;
-                    self.reader += temp.1;
-                    a.push(temp.0);
-                }
-                marker::OBJECT => {a.push(self.decode_object_from_vec()?);}
-                marker::MOVIECLIP => return Err(DecodeError::Unsupported { marker }),
-                marker::NULL => {a.push(Value::Null);},
-                marker::UNDEFINED => {a.push(Value::Undefined);},
-                marker::REFERENCE => {a.push(self.decode_reference_from_vec()?); self.reader += 2}
-                marker::ECMA_ARRAY => {a.push(self.decode_ecma_array_from_vec()?);} // TODO
-                marker::OBJECT_END_MARKER => return Err(DecodeError::UnexpectedObjectEnd),
-                marker::STRICT_ARRAY => {a.push(self.decode_strict_array_from_vec()?);}
-                marker::DATE => {a.push(self.decode_date_from_vec()?);}
-                marker::LONG_STRING => {let decoded = self.decode_long_string_from_vec()?; a.push(decoded.0); self.reader += decoded.1;},
-                marker::UNSUPPORTED => return Err(DecodeError::Unsupported { marker }),
-                marker::RECORDSET => return Err(DecodeError::Unsupported { marker }),
-                marker::XML_DOCUMENT => {let decoded = self.decode_xml_document_from_vec()?; a.push(decoded.0); self.reader += decoded.1},
-                marker::TYPED_OBJECT => {a.push(self.decode_typed_object_from_vec()?);}
-                marker::AVMPLUS_OBJECT => return Err(DecodeError::Unsupported { marker }), //{self.decode_avmplus_from_vec();}
-                _ => return Err(DecodeError::Unknown { marker }),
-            }
-            println!("{:?}",a);
-            println!("{:?}",a.get(0).unwrap());
-        }
-        Ok(a)
-    }
-
-    fn decode_number_from_vec(&mut self) -> DecodeResult<Value> {
-        let mut n = Cursor::new(&self.innervec[self.reader as usize..]);
-        println!("N :  {:?}",n);
-        let a = n.read_f64::<BigEndian>()?;
-        Ok(Value::Number(a))
-    }
-    fn decode_boolean_from_vec(&mut self) -> DecodeResult<Value> {
-        let b = Cursor::new(&self.innervec[self.reader as usize..]).read_u8()? != 0;
-        Ok(Value::Boolean(b))
-    }
-    fn decode_string_from_vec(&mut self) -> DecodePart<Value> {
-        let len = Cursor::new(&self.innervec[self.reader as usize..]).read_u16::<BigEndian>()? as usize; self.reader += 2;
-        println!("{}",len);
-        println!("L : {:?}",&self.innervec[self.reader as usize..self.reader as usize + len]);
-        let a = self.read_utf8_from_vec(len).map(Value::String)?;
-        Ok((a, len as u32))
-    }
-    fn read_utf8_from_vec(&mut self, len: usize) -> DecodeResult<String> {
-        let mut buf = vec![0; len];
-        Cursor::new(&self.innervec[self.reader as usize..]).read_exact(&mut buf)?;
-        println!("buf : {:?}",buf);
-        let utf8 = String::from_utf8(buf)?;
-        println!("utf : {:?}",utf8);
-        Ok(utf8)
-    }
-
-    fn decode_object_from_vec(&mut self) -> DecodeResult<Value> {
-        self.decode_complex_type_from_vec(|this| {
-            let entries = this.decode_pairs_from_vec()?;
-            Ok(Value::Object {
-                class_name: None,
-                entries,
-            })
-        })
-    }
-    fn decode_complex_type_from_vec<F>(&mut self, f: F) -> DecodeResult<Value>
-    where
-        F: FnOnce(&mut Self) -> DecodeResult<Value>,
-    {
-        let index = self.complexes.len();
-        self.complexes.push(Value::Null);
-        let value = f(self)?;
-        self.complexes[index] = value.clone();
-        Ok(value)
-    }
-    fn decode_pairs_from_vec(&mut self) -> DecodeResult<Vec<Pair<String, Value>>> {
-        let mut entries = Vec::new();
-        loop {
-            println!("REMAINING VEC FROM DECODE PAIRS FROM VEC FUNCTION : {:?}", &self.innervec[self.reader as usize..]);
-            let len = Cursor::new(&self.innervec[self.reader as usize..]).read_u16::<BigEndian>()? as usize;
-            println!("len : {}",len);
-            self.reader += 2;
-            let key = self.read_utf8_from_vec(len)?;
-            self.reader += len as u32;
-            match self.decode_once() {
-                Ok(value) => {
-                    entries.push(Pair { key, value });
-                }
-                Err(DecodeError::UnexpectedObjectEnd) if key.is_empty() => break,
-                Err(e) => {println!("NOOOO : {}",e);return Err(e)},
-            }
-            println!("ENTRIES : {:?}",entries);
-        }
-        Ok(entries)
-    }
-    fn decode_reference_from_vec(&mut self) -> DecodeResult<Value> {
-        let index = Cursor::new(&self.innervec[self.reader as usize..]).read_u16::<BigEndian>()? as usize;
-        self.complexes
-            .get(index)
-            .ok_or(DecodeError::OutOfRangeReference { index })
-            .and_then(|v| {
-                if *v == Value::Null {
-                    Err(DecodeError::CircularReference { index })
-                } else {
-                    Ok(v.clone())
-                }
-            })
-    }
-    fn decode_ecma_array_from_vec(&mut self) -> DecodeResult<Value> {
-        self.decode_complex_type_from_vec(|this: &mut Decoder<R>| {
-            let _count = Cursor::new(&this.innervec[this.reader as usize..]).read_u32::<BigEndian>()? as usize;
-            let entries = this.decode_pairs_from_vec()?; // TODO TODO TODO TODO TODO TODO TODO TODO 
-            Ok(Value::EcmaArray { entries })
-        })
-    }
-    fn decode_strict_array_from_vec(&mut self) -> DecodeResult<Value> {
-        self.decode_complex_type_from_vec(|this: &mut Decoder<R>| {
-            let count = Cursor::new(&this.innervec[this.reader as usize..]).read_u32::<BigEndian>()? as usize; this.reader += 4;
-            let entries = (0..count)
-                .map(|_| this.decode_once())
-                .collect::<DecodeResult<_>>()?;
-            Ok(Value::Array { entries })
-        })
-    }
-    fn decode_date_from_vec(&mut self) -> DecodeResult<Value> {
-        let millis = Cursor::new(&self.innervec[self.reader as usize..]).read_f64::<BigEndian>()?; self.reader += 8;
-        let time_zone = Cursor::new(&self.innervec[self.reader as usize..]).read_i16::<BigEndian>()?; self.reader += 2;
-        if !(millis.is_finite() && millis.is_sign_positive()) {
-            Err(DecodeError::InvalidDate { millis })
-        } else {
-            Ok(Value::Date {
-                unix_time: time::Duration::from_millis(millis as u64),
-                time_zone,
-            })
-        }
-    }
-    fn decode_long_string_from_vec(&mut self) -> DecodePart<Value> {
-        let len = Cursor::new(&self.innervec[self.reader as usize..]).read_u32::<BigEndian>()? as usize; self.reader += 4;
-        let string = self.read_utf8_from_vec(len).map(Value::String)?;
-        Ok((string, len as u32))
-    }
-    fn decode_xml_document_from_vec(&mut self) -> DecodePart<Value> {
-        let len = Cursor::new(&self.innervec[self.reader as usize..]).read_u32::<BigEndian>()? as usize;
-        Ok((self.read_utf8_from_vec(len).map(Value::XmlDocument)?, len as u32))
-    }
-    fn decode_typed_object_from_vec(&mut self) -> DecodeResult<Value> {
-        self.decode_complex_type(|this| {
-            let len = Cursor::new(&this.innervec[this.reader as usize..]).read_u16::<BigEndian>()? as usize;
-            let class_name = this.read_utf8_from_vec(len)?;
-            let entries = this.decode_pairs_from_vec()?;
-            Ok(Value::Object {
-                class_name: Some(class_name),
-                entries,
-            })
-        })
-    }
-    fn decode_avmplus_from_vec(&mut self) -> DecodeResult<Value> {
-        let value = amf3::Decoder::new(&mut self.inner).decode()?;
-        Ok(Value::AvmPlus(value))
-    }
     
 }
+
 
 impl<R> Decoder<R>
 where
@@ -266,8 +47,6 @@ where
         Decoder {
             inner,
             complexes: Vec::new(),
-            reader: 0,
-            innervec: Vec::new()
         }
     }
 
@@ -399,9 +178,7 @@ where
     fn read_utf8(&mut self, len: usize) -> DecodeResult<String> {
         let mut buf = vec![0; len];
         self.inner.read_exact(&mut buf)?;
-        println!("buf : {:?}",buf);
         let utf8 = String::from_utf8(buf)?;
-        println!("utf : {:?}",utf8);
         Ok(utf8)
     }
     fn decode_pairs(&mut self) -> DecodeResult<Vec<Pair<String, Value>>> {

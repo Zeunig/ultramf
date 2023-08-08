@@ -31,6 +31,8 @@ pub mod error;
 
 /// AMF decoding result.
 pub type DecodeResult<T> = Result<T, error::DecodeError>;
+pub type DecodePart<T> = Result<(T, u32), error::DecodeError>;
+
 
 /// Format version.
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
